@@ -1,0 +1,18 @@
+# toolchain (local only)
+sdk/
+jdk/
+# keys
+*.keystore
+*.jks
+local.properties
+# build outputs
+build/
+whoran/whoran.apk
+*.idsig
+*.class
+*.dex
+# raw device logs
+sample_wolf.txt
+*_logs.txt
+node_modules/
+.wrangler/

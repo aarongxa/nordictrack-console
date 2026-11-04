@@ -1,0 +1,19 @@
+{
+  // Treadmill stats: receives one JSON per workout from the home Mac,
+  // stores it in the private R2 bucket and emails the runner a summary.
+  "name": "treadmill-stats",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": true,
+  "observability": { "enabled": true },
+  "r2_buckets": [{ "binding": "STATS", "bucket_name": "treadmill-stats" }],
+  "send_email": [
+    {
+      "name": "EMAIL",
+      "allowed_sender_addresses": ["treadmill@aarongxa.com"]
+    }
+  ]
+  // Secrets (not in git): UPLOAD_TOKEN_SHA256 = hex SHA 256 of the bearer token;
+  // EMAIL_AARON and EMAIL_CAITLIN = recipient addresses (must be verified Email Routing destinations).
+  // The token itself lives only in the Mac Keychain (service treadmill-stats-upload).
+}
