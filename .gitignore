@@ -16,3 +16,4 @@ sample_wolf.txt
 *_logs.txt
 node_modules/
 .wrangler/
+proof_*.png

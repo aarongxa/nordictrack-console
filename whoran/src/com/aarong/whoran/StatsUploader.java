@@ -161,6 +161,10 @@ final class StatsUploader {
             }
             long endMs = epochMs(w.date, w.endSec);
             String runner = readPick(w.id);
+            if (runner == null) {                         // v1.8: picked during the run
+                runner = LiveRunner.runnerFor(ctx, epochMs(w.date, w.startSec), endMs);
+                if (runner != null) { LiveRunner.savePick(ctx, w.id, runner); Log.i(TAG, w.id + " runner from live pick: " + runner); }
+            }
             long openedAt = opened.optLong(w.id, 0);
             if (runner == null && openedAt == 0 && now - endMs < PICK_MAX_AGE_MIN * 60_000L) {
                 openPicker(w);

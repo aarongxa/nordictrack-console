@@ -30,14 +30,17 @@ import java.util.Locale;
 public class PickActivity extends Activity {
     private static final String TAG = "whoran";
     private static final long TIMEOUT_MS = 10 * 60 * 1000L;
+    private static final long LIVE_TIMEOUT_MS = 3 * 60 * 1000L;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable timeout = new Runnable() {
-        @Override public void run() { finishWith("Unknown"); }
+        @Override public void run() { if (live) finish(); else finishWith("Unknown"); }
     };
 
     private String workoutId;
     private boolean done;
+    private boolean live;          // v1.8: picked while running (badge or workout start), no workout id yet
+    private TextView title;
     private TextView subtitle;
     private LinearLayout otherRow;
     private EditText otherField;
@@ -57,12 +60,28 @@ public class PickActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         // A new workout arrived while the old prompt was still open: close the old one as Unknown.
-        if (!done && workoutId != null) writeJson(workoutId, "Unknown");
+        if (!done && !live && workoutId != null) writeJson(workoutId, "Unknown");
         setIntent(intent);
         bind(intent);
     }
 
     private void bind(Intent intent) {
+        live = intent != null && intent.getBooleanExtra("live", false);
+        if (live) {
+            String cur = LiveRunner.current(this);
+            title.setText("Who's running?");
+            subtitle.setText(cur != null && !cur.isEmpty()
+                    ? "Now: " + cur + ". Tap the Running badge anytime to change it."
+                    : "Tap the Running badge anytime to change it.");
+            workoutId = null;
+            done = false;
+            otherRow.setVisibility(View.GONE);
+            otherField.setText("");
+            handler.removeCallbacks(timeout);
+            handler.postDelayed(timeout, LIVE_TIMEOUT_MS);
+            return;
+        }
+        title.setText("Who ran?");
         String id = intent != null ? intent.getStringExtra("workout_id") : null;
         if (id == null || id.trim().isEmpty()) {
             id = new SimpleDateFormat("yyyy-MM-dd'T'HH-mm-ss", Locale.US).format(new Date());
@@ -80,12 +99,12 @@ public class PickActivity extends Activity {
     @Override
     protected void onDestroy() {
         handler.removeCallbacks(timeout);
-        if (!done && workoutId != null && isFinishing()) writeJson(workoutId, "Unknown");
+        if (!done && !live && workoutId != null && isFinishing()) writeJson(workoutId, "Unknown");
         super.onDestroy();
     }
 
     @Override
-    public void onBackPressed() { finishWith("Unknown"); }
+    public void onBackPressed() { if (live) finish(); else finishWith("Unknown"); }
 
     private int dp(float v) {
         return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());
@@ -114,7 +133,7 @@ public class PickActivity extends Activity {
         root.setBackgroundColor(Color.rgb(16, 16, 20));
         root.setPadding(dp(32), dp(24), dp(32), dp(24));
 
-        TextView title = new TextView(this);
+        title = new TextView(this);
         title.setText("Who ran?");
         title.setTextColor(Color.WHITE);
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 44);
@@ -215,6 +234,14 @@ public class PickActivity extends Activity {
 
     private void finishWith(String user) {
         if (done) return;
+        if (live) {
+            done = true;
+            LiveRunner.setName(this, user);
+            HomeButtonService.refreshBadge(this);
+            handler.removeCallbacks(timeout);
+            finish();
+            return;
+        }
         writeJson(workoutId, user);
         handler.removeCallbacks(timeout);
         finish();

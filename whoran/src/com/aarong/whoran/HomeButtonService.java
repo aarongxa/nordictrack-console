@@ -29,6 +29,9 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.WindowManager;
+import android.graphics.drawable.GradientDrawable;
+import android.util.TypedValue;
+import android.widget.TextView;
 
 public class HomeButtonService extends Service {
     private static final String TAG = "whoran";
@@ -39,6 +42,13 @@ public class HomeButtonService extends Service {
     private View button;
     private WindowManager.LayoutParams lp;
     private StatsUploader stats;
+
+    // ---- v1.8: live runner badge ----
+    private TextView badge;
+    private WindowManager.LayoutParams badgeLp;
+    private boolean live;                          // iFit workout screen seen (sticky while our picker is up)
+    private boolean simWorkout;                    // adb test: --es sim_workout start|end
+    private static HomeButtonService instance;
 
     // ---- idle blackout ----
     static final long IDLE_MS = 120_000L;          // blackout after this long without a touch
@@ -63,6 +73,22 @@ public class HomeButtonService extends Service {
 
     static void start(Context c) { start(c, false); }
 
+    static void simulate(Context c, String what) {
+        if (!canDraw(c)) return;
+        Intent i = new Intent(c, HomeButtonService.class).putExtra("sim_workout", what);
+        try {
+            if (Build.VERSION.SDK_INT >= 26) c.startForegroundService(i); else c.startService(i);
+        } catch (Exception e) {
+            Log.w(TAG, "simulate failed: " + e);
+        }
+    }
+
+    /** Badge text changed (runner picked). Called on the main thread from PickActivity. */
+    static void refreshBadge(Context c) {
+        HomeButtonService s = instance;
+        if (s != null) s.updateBadge();
+    }
+
     static void start(Context c, boolean checkNow) {
         if (!canDraw(c)) { Log.w(TAG, "no overlay permission; home button not started"); return; }
         Intent i = new Intent(c, HomeButtonService.class).putExtra("check_now", checkNow);
@@ -80,7 +106,9 @@ public class HomeButtonService extends Service {
         if (!canDraw(this)) { stopSelf(); return; }
         restoreNavBar();                              // undo a hide left by a crash or reboot
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+        instance = this;
         addButton();
+        addBadge();
         addTouchSensor();
         handler.postDelayed(tick, CHECK_MS);
         stats = new StatsUploader(this);              // v1.4: treadmill stats upload, on its own thread
@@ -90,6 +118,12 @@ public class HomeButtonService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && intent.getBooleanExtra("check_now", false) && stats != null) stats.checkNow();
+        String sim = intent != null ? intent.getStringExtra("sim_workout") : null;
+        if (sim != null && wm != null) {                       // adb test of the workout start path, no belt
+            simWorkout = "start".equals(sim);
+            Log.i(TAG, "simulated workout " + (simWorkout ? "start" : "end"));
+            setLive(simWorkout, true);
+        }
         return START_STICKY;
     }
 
@@ -101,6 +135,8 @@ public class HomeButtonService extends Service {
         removeView(blackout); blackout = null;
         removeView(touchSensor); touchSensor = null;
         removeView(button); button = null;
+        removeView(badge); badge = null;
+        if (instance == this) instance = null;
         super.onDestroy();
     }
 
@@ -178,6 +214,90 @@ public class HomeButtonService extends Service {
         wm.addView(button, lp);
     }
 
+    /** "Running: name" pill, top center by default, draggable; tap reopens the picker. */
+    private void addBadge() {
+        final SharedPreferences prefs = getSharedPreferences("runner_badge", MODE_PRIVATE);
+        badge = new TextView(this);
+        badge.setTextColor(Color.WHITE);
+        badge.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+        badge.setSingleLine(true);
+        badge.setPadding(dp(16), dp(6), dp(16), dp(6));
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(Color.argb(200, 20, 20, 24));
+        bg.setStroke(dp(1), Color.argb(160, 255, 255, 255));
+        bg.setCornerRadius(dp(18));
+        badge.setBackground(bg);
+        badge.setVisibility(View.GONE);
+        badgeLp = new WindowManager.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT, overlayType(),
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT);
+        badgeLp.gravity = Gravity.TOP | Gravity.LEFT;
+        final DisplayMetrics dm = getResources().getDisplayMetrics();
+        badgeLp.x = clamp(prefs.getInt("x", dm.widthPixels / 2 - dp(90)), 0, dm.widthPixels - dp(60));
+        badgeLp.y = clamp(prefs.getInt("y", dp(6)), 0, dm.heightPixels - dp(36));
+        final int slop = ViewConfiguration.get(this).getScaledTouchSlop();
+        badge.setOnTouchListener(new View.OnTouchListener() {
+            float downRawX, downRawY; int startX, startY; boolean dragging;
+            @Override
+            public boolean onTouch(View v, MotionEvent e) {
+                switch (e.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        noteTouch();
+                        downRawX = e.getRawX(); downRawY = e.getRawY();
+                        startX = badgeLp.x; startY = badgeLp.y; dragging = false;
+                        return true;
+                    case MotionEvent.ACTION_MOVE: {
+                        float dx = e.getRawX() - downRawX, dy = e.getRawY() - downRawY;
+                        if (!dragging && (Math.abs(dx) > slop || Math.abs(dy) > slop)) dragging = true;
+                        if (dragging) {
+                            DisplayMetrics m = getResources().getDisplayMetrics();
+                            badgeLp.x = clamp(startX + (int) dx, 0, m.widthPixels - v.getWidth());
+                            badgeLp.y = clamp(startY + (int) dy, 0, m.heightPixels - v.getHeight());
+                            wm.updateViewLayout(badge, badgeLp);
+                        }
+                        return true;
+                    }
+                    case MotionEvent.ACTION_UP:
+                        if (dragging) prefs.edit().putInt("x", badgeLp.x).putInt("y", badgeLp.y).apply();
+                        else openLivePicker();
+                        return true;
+                }
+                return false;
+            }
+        });
+        wm.addView(badge, badgeLp);
+    }
+
+    private void updateBadge() {
+        if (badge == null) return;
+        String name = live ? LiveRunner.current(this) : null;
+        badge.setText("Running: " + (name == null || name.isEmpty() ? "tap to pick" : name));
+        badge.setVisibility(live && blackout == null ? View.VISIBLE : View.GONE);
+    }
+
+    private void openLivePicker() {
+        Intent i = new Intent(this, PickActivity.class).putExtra("live", true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try { startActivity(i); Log.i(TAG, "live picker opened"); }
+        catch (Exception e) { Log.w(TAG, "live picker failed: " + e); }
+    }
+
+    /** Workout screen appeared (true) or went away (false). Opens the picker on a new start. */
+    private void setLive(boolean now, boolean sim) {
+        if (now == live) { updateBadge(); return; }
+        live = now;
+        long t = System.currentTimeMillis();
+        if (now) {
+            boolean fresh = LiveRunner.begin(this, t, sim);
+            String cur = LiveRunner.current(this);
+            if (fresh || cur == null || cur.isEmpty()) openLivePicker();
+        } else {
+            LiveRunner.end(this, t);
+        }
+        updateBadge();
+    }
+
     private static int overlayType() {
         return Build.VERSION.SDK_INT >= 26 ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                 : WindowManager.LayoutParams.TYPE_PHONE;
@@ -240,7 +360,12 @@ public class HomeButtonService extends Service {
         if (!hasUsageAccess()) return false;          // without usage access we can't tell; never black out
         refreshForeground();
         String pkg = fgPkg, cls = fgCls == null ? "" : fgCls;
-        if (stats != null) stats.setInWorkout(IFIT.equals(pkg) && cls.contains("InWorkoutView"));
+        boolean inWorkout = IFIT.equals(pkg) && cls.contains("InWorkoutView");
+        if (getPackageName().equals(pkg)) inWorkout = live;   // our picker over the workout keeps it live
+        if (simWorkout) inWorkout = true;
+        if (stats != null) stats.setInWorkout(inWorkout);
+        setLive(inWorkout, simWorkout);
+        if (live) return false;                               // never black out mid run
         if (pkg == null) return false;
         for (String n : NEVER) if (n.equals(pkg)) return false;
         if (FOSSIFY.equals(pkg)) return true;
@@ -274,6 +399,7 @@ public class HomeButtonService extends Service {
             blackout = v;
             hideNavBar();
             if (button != null) button.setVisibility(View.GONE);
+            updateBadge();
             Log.i(TAG, "blackout on (fg=" + fgPkg + "/" + fgCls + ")");
         } catch (Exception ex) {
             Log.w(TAG, "blackout failed: " + ex);
@@ -285,6 +411,7 @@ public class HomeButtonService extends Service {
         blackout = null;
         restoreNavBar();
         if (button != null) button.setVisibility(View.VISIBLE);
+        updateBadge();
         noteTouch();
         Log.i(TAG, "blackout off");
     }

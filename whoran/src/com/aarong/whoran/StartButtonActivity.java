@@ -11,7 +11,8 @@ import android.widget.Toast;
 
 /** Launcher entry and adb entry: starts (or with --ez stop true, stops) the floating Home button.
  *  With --es wallpaper /abs/path.png it only sets the system and lock wallpaper, then finishes.
- *  With --ez check true it also runs a stats check now (token import, Worker probe, log scan). */
+ *  With --ez check true it also runs a stats check now (token import, Worker probe, log scan).
+ *  With --es sim_workout start|end it fakes the iFit workout screen for the runner picker and badge test. */
 public class StartButtonActivity extends Activity {
     @Override
     protected void onCreate(Bundle saved) {
@@ -29,7 +30,9 @@ public class StartButtonActivity extends Activity {
             Toast.makeText(this, "Overlay permission missing: adb shell appops set com.aarong.whoran SYSTEM_ALERT_WINDOW allow",
                     Toast.LENGTH_LONG).show();
         } else {
-            HomeButtonService.start(this, i != null && i.getBooleanExtra("check", false));
+            String sim = i != null ? i.getStringExtra("sim_workout") : null;
+            if (sim != null) HomeButtonService.simulate(this, sim);    // v1.8 test: start|end, no belt
+            else HomeButtonService.start(this, i != null && i.getBooleanExtra("check", false));
         }
         finish();
     }
