@@ -13,6 +13,8 @@ Run on the Mac with `export ANDROID_SERIAL=<console-ip>:5555`, then plain `adb`.
 | Brightness test (already reverted) | `adb shell settings put system screen_brightness 255` |
 | whoran v1.3 hides nav bar during blackout (restored on tap) | `adb shell settings put global policy_control immersive.status=*` |
 | whoran v1.3 sets `immersive_mode_confirmations` to confirmed | `adb shell settings delete secure immersive_mode_confirmations` |
+| whoran 1.7 (11/04): adds `UsbOkService`, an accessibility service that taps OK only on the SystemUI dialog asking to let iFIT access ICON Generic HID; BootReceiver re-adds it to the enabled list at every boot and install | Don't uninstall (that deletes the upload token, which lives only on the console) and don't use `-d` (this user build blocks downgrades). Rebuild the 1.6 source (`git show 116334d:whoran/...`) with a versionCode above the installed one and `adb install -r` it, then run the next row |
+| `UsbOkService` appended to `enabled_accessibility_services` (`accessibility_enabled` was already 1) | `adb shell settings put secure enabled_accessibility_services 'com.ifit.glassos_service/com.ifit.glassos_appnavigation_service.service.AccessibilityServiceImpl:com.joaohouto.assistivemenutool/com.joaohouto.assistivemenutool.AssistiveMenuAccessibilityService'` (the value before 1.7). On its own this only lasts until the next boot while 1.7 is installed |
 
 # Stats pipeline (Cloudflare and console) and how to undo it
 

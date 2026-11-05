@@ -4,8 +4,9 @@ cd "$(dirname "$0")"
 TOP=$(cd .. && pwd)
 export JAVA_HOME="$TOP/jdk"; export PATH="$JAVA_HOME/bin:$PATH"
 BT="$TOP/sdk/build-tools/34.0.0"; JAR="$TOP/sdk/platforms/android-28/android.jar"
-rm -rf build && mkdir -p build/classes build/dex
-"$BT/aapt2" link -o build/base.apk -I "$JAR" --manifest AndroidManifest.xml --min-sdk-version 24 --target-sdk-version 28
+rm -rf build && mkdir -p build/classes build/dex build/res
+"$BT/aapt2" compile --dir res -o build/res/res.zip
+"$BT/aapt2" link -o build/base.apk -I "$JAR" --manifest AndroidManifest.xml build/res/res.zip --min-sdk-version 24 --target-sdk-version 28
 javac --release 8 -nowarn -Xlint:-options -classpath "$JAR" -d build/classes $(find src -name '*.java')
 "$BT/d8" --release --min-api 24 --lib "$JAR" --output build/dex $(find build/classes -name '*.class')
 cp build/base.apk build/unsigned.apk
