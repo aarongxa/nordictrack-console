@@ -50,6 +50,15 @@ public class HomeButtonService extends Service {
     private boolean simWorkout;                    // adb test: --es sim_workout start|end
     private static HomeButtonService instance;
 
+    // ---- v1.9: bring iFit up after boot (eru used to) ----
+    private static final String LAUNCHER = "com.ifit.launcher";
+    private static final long[] BOOT_DELAYS_S = { 25, 35, 50, 70 };   // checks at about 25, 60, 110, 180 s
+    private boolean bootLaunchStarted;
+    private int bootAttempt;
+    private final Runnable bootLaunch = new Runnable() {
+        @Override public void run() { bootLaunchStep(); }
+    };
+
     // ---- idle blackout ----
     static final long IDLE_MS = 120_000L;          // blackout after this long without a touch
     private static final long CHECK_MS = 5_000L;
@@ -72,6 +81,17 @@ public class HomeButtonService extends Service {
     }
 
     static void start(Context c) { start(c, false); }
+
+    /** From BootReceiver on BOOT_COMPLETED: also bring iFit up once the system settles (v1.9). */
+    static void startBoot(Context c) {
+        if (!canDraw(c)) { Log.w(TAG, "no overlay permission; home button not started"); return; }
+        Intent i = new Intent(c, HomeButtonService.class).putExtra("boot_launch", true);
+        try {
+            if (Build.VERSION.SDK_INT >= 26) c.startForegroundService(i); else c.startService(i);
+        } catch (Exception e) {
+            Log.w(TAG, "could not start home button: " + e);
+        }
+    }
 
     static void simulate(Context c, String what) {
         if (!canDraw(c)) return;
@@ -118,6 +138,12 @@ public class HomeButtonService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && intent.getBooleanExtra("check_now", false) && stats != null) stats.checkNow();
+        if (intent != null && intent.getBooleanExtra("boot_launch", false) && !bootLaunchStarted && wm != null) {
+            bootLaunchStarted = true;
+            bootAttempt = 0;
+            Log.i(TAG, "boot launch: iFit check in " + BOOT_DELAYS_S[0] + "s");
+            handler.postDelayed(bootLaunch, BOOT_DELAYS_S[0] * 1000L);
+        }
         String sim = intent != null ? intent.getStringExtra("sim_workout") : null;
         if (sim != null && wm != null) {                       // adb test of the workout start path, no belt
             simWorkout = "start".equals(sim);
@@ -130,6 +156,7 @@ public class HomeButtonService extends Service {
     @Override
     public void onDestroy() {
         handler.removeCallbacks(tick);
+        handler.removeCallbacks(bootLaunch);
         if (stats != null) { stats.stop(); stats = null; }
         if (blackout != null) restoreNavBar();
         removeView(blackout); blackout = null;
@@ -354,6 +381,51 @@ public class HomeButtonService extends Service {
             }
         }
         fgScannedTo = now;
+    }
+
+    /** Package of the latest MOVE_TO_FOREGROUND since this boot, or null if none yet. */
+    private String foregroundSinceBoot() {
+        UsageStatsManager usm = (UsageStatsManager) getSystemService(USAGE_STATS_SERVICE);
+        if (usm == null || !hasUsageAccess()) return null;
+        long now = System.currentTimeMillis();
+        UsageEvents ev = usm.queryEvents(now - SystemClock.elapsedRealtime(), now);
+        UsageEvents.Event e = new UsageEvents.Event();
+        String pkg = null; long best = -1;
+        while (ev != null && ev.hasNextEvent()) {
+            ev.getNextEvent(e);
+            if (e.getEventType() == UsageEvents.Event.MOVE_TO_FOREGROUND && e.getTimeStamp() >= best) {
+                best = e.getTimeStamp(); pkg = e.getPackageName();
+            }
+        }
+        return pkg;
+    }
+
+    private void bootLaunchStep() {
+        String fg = foregroundSinceBoot();
+        if (IFIT.equals(fg)) { Log.i(TAG, "boot launch: iFit is in the foreground, done"); return; }
+        boolean idleScreen = fg == null || LAUNCHER.equals(fg) || FOSSIFY.equals(fg)
+                || "com.android.settings".equals(fg) || getPackageName().equals(fg);
+        if (idleScreen) {
+            Intent i = getPackageManager().getLaunchIntentForPackage(IFIT);
+            if (i == null) { Log.w(TAG, "boot launch: no launch intent for " + IFIT); return; }
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            try {
+                startActivity(i);
+                Log.i(TAG, "boot launch: started " + i.getComponent().flattenToShortString()
+                        + " (attempt " + (bootAttempt + 1) + ", fg was " + fg + ")");
+            } catch (Exception e) {
+                Log.w(TAG, "boot launch failed: " + e);
+            }
+        } else {
+            Log.i(TAG, "boot launch: fg is " + fg + "; leaving it (attempt " + (bootAttempt + 1) + ")");
+        }
+        bootAttempt++;
+        if (bootAttempt < BOOT_DELAYS_S.length) handler.postDelayed(bootLaunch, BOOT_DELAYS_S[bootAttempt] * 1000L);
+        else handler.postDelayed(new Runnable() {
+            @Override public void run() {
+                Log.i(TAG, "boot launch: final check, fg=" + foregroundSinceBoot() + "; giving up");
+            }
+        }, 15_000L);
     }
 
     private boolean blackoutAllowed() {

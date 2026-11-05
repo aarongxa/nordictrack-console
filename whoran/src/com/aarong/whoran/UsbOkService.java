@@ -21,6 +21,8 @@ import java.util.Locale;
 /**
  * Taps OK on exactly one dialog: SystemUI's USB permission prompt asking to let
  * iFIT access the "ICON Generic HID" motor board. Nothing else is ever clicked.
+ * v1.9: also taps RETRY on the iFit launcher's blue arrow screen (com.ifit.launcher:id/retryButton),
+ * at most MAX_RETRY times per boot, 20 s apart.
  */
 public class UsbOkService extends AccessibilityService {
     private static final String TAG = "whoran";
@@ -30,6 +32,11 @@ public class UsbOkService extends AccessibilityService {
     private static final String APP = "ifit";
     private static final long DEBOUNCE_MS = 2000L;
     static final String LOG_FILE = "usb_ok.log";
+    private static final String LAUNCHER = "com.ifit.launcher";
+    private static final String RETRY_ID = "com.ifit.launcher:id/retryButton";
+    private static final long RETRY_DEBOUNCE_MS = 20_000L;
+    private static final int MAX_RETRY = 5;
+    private long lastRetry;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private long lastClick;
@@ -38,11 +45,17 @@ public class UsbOkService extends AccessibilityService {
     protected void onServiceConnected() {
         log(this, "service connected");
         check("connected");
+        checkRetry("connected");
     }
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent e) {
         if (e == null || e.getPackageName() == null) return;
+        if (LAUNCHER.contentEquals(e.getPackageName())) {
+            checkRetry("event");
+            handler.postDelayed(new Runnable() { public void run() { checkRetry("retry"); } }, 400);
+            return;
+        }
         if (!SYSTEMUI.contentEquals(e.getPackageName())) return;
         check("event");
         // the dialog content can land a moment after the window event
@@ -67,6 +80,37 @@ public class UsbOkService extends AccessibilityService {
             log(this, "clicked OK=" + done + " (" + why + ") text=\"" + sb.toString().trim().replace('\n', ' ') + "\"");
         } catch (Exception ex) {
             log(this, "error: " + ex);
+        }
+    }
+
+    /** RETRY on the iFit launcher's blue arrow screen; capped per boot. */
+    private void checkRetry(String why) {
+        if (SystemClock.elapsedRealtime() - lastRetry < RETRY_DEBOUNCE_MS) return;
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) return;
+        try {
+            if (root.getPackageName() == null || !LAUNCHER.contentEquals(root.getPackageName())) return;
+            List<AccessibilityNodeInfo> found = root.findAccessibilityNodeInfosByViewId(RETRY_ID);
+            if (found == null || found.isEmpty()) return;
+            AccessibilityNodeInfo b = found.get(0);
+            if (!b.isVisibleToUser() || !b.isEnabled() || b.getText() == null
+                    || !"retry".equalsIgnoreCase(b.getText().toString().trim())) return;
+            android.content.SharedPreferences sp = getSharedPreferences("usb_ok", MODE_PRIVATE);
+            int boot = Settings.Global.getInt(getContentResolver(), Settings.Global.BOOT_COUNT, -1);
+            int n = sp.getInt("retry_boot", -2) == boot ? sp.getInt("retry_taps", 0) : 0;
+            if (n >= MAX_RETRY) {
+                if (sp.getBoolean("retry_capped", false) == false) {
+                    sp.edit().putBoolean("retry_capped", true).apply();
+                    log(this, "RETRY cap of " + MAX_RETRY + " reached this boot; not tapping");
+                }
+                return;
+            }
+            lastRetry = SystemClock.elapsedRealtime();
+            boolean done = b.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+            sp.edit().putInt("retry_boot", boot).putInt("retry_taps", n + 1).putBoolean("retry_capped", false).apply();
+            log(this, "tapped RETRY=" + done + " (" + why + ") " + (n + 1) + "/" + MAX_RETRY + " this boot");
+        } catch (Exception ex) {
+            log(this, "retry error: " + ex);
         }
     }
 
